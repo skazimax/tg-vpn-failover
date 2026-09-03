@@ -1,0 +1,19 @@
+[Unit]
+Description=Backup VLESS SOCKS endpoint for MTProto proxy
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=mtproxy-vless
+Group=mtproxy-vless
+ExecStart=/usr/bin/sing-box run -c /etc/sing-box/mtproxy-backup.json
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

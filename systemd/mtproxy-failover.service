@@ -1,0 +1,8 @@
+[Unit]
+Description=Check Telegram route and alternate AdGuard/VLESS on failure
+Wants=mtproxy-egress.service
+After=network-online.target mtproxy-egress.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mtproxy-failover

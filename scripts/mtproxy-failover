@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+runtime_dir=/run/mtproxy-failover
+state_file=$runtime_dir/state
+failures_file=$runtime_dir/failures
+egress_config=/etc/sing-box/mtproxy-egress.json
+probe_url=https://core.telegram.org/getProxyConfig
+failure_threshold=3
+
+install -d -m 0755 "$runtime_dir"
+exec 9>"$runtime_dir/lock"
+flock -n 9 || exit 0
+
+if [[ -s "$state_file" ]]; then
+  route=$(cat "$state_file")
+elif grep -q '"server_port": 1081' "$egress_config"; then
+  route=vless
+else
+  route=adguard
+fi
+[[ "$route" == adguard || "$route" == vless ]] || route=adguard
+
+if [[ "$route" == adguard ]]; then
+  socks_port=1080
+else
+  socks_port=1081
+fi
+
+if curl -4 -fsS --proxy "socks5h://127.0.0.1:$socks_port" \
+    --connect-timeout 7 --max-time 15 "$probe_url" | grep -q '^proxy_for '; then
+  printf '0\n' >"$failures_file"
+  printf '%s\n' "$route" >"$state_file"
+  exit 0
+fi
+
+failures=$(cat "$failures_file" 2>/dev/null || printf '0')
+[[ "$failures" =~ ^[0-9]+$ ]] || failures=0
+failures=$((failures + 1))
+printf '%s\n' "$failures" >"$failures_file"
+logger -t mtproxy-failover "Telegram probe failed on $route ($failures/$failure_threshold)"
+(( failures >= failure_threshold )) || exit 0
+
+if [[ "$route" == adguard ]]; then
+  next_route=vless
+  next_port=1081
+  systemctl restart mtproxy-vless.service
+else
+  next_route=adguard
+  next_port=1080
+  systemctl restart egg-cam-adguard.service
+fi
+
+for _ in {1..20}; do
+  ss -lnt | grep -q "127.0.0.1:$next_port" && break
+  sleep 1
+done
+ss -lnt | grep -q "127.0.0.1:$next_port" || {
+  logger -t mtproxy-failover "next SOCKS endpoint $next_route did not start"
+  exit 1
+}
+
+config_tmp=$(mktemp)
+trap 'rm -f "$config_tmp"' EXIT
+printf '%s\n' \
+  '{' \
+  '  "log": {"level": "info", "timestamp": true},' \
+  '  "inbounds": [{' \
+  '    "type": "socks",' \
+  '    "tag": "shared-socks",' \
+  '    "listen": "127.0.0.1",' \
+  '    "listen_port": 1079' \
+  '  }],' \
+  '  "outbounds": [{' \
+  '    "type": "socks",' \
+  '    "tag": "active-upstream",' \
+  '    "server": "127.0.0.1",' \
+  "    \"server_port\": $next_port" \
+  '  }]' \
+  '}' >"$config_tmp"
+/usr/bin/sing-box check -c "$config_tmp"
+install -o root -g mtproxy-vless -m 0640 "$config_tmp" "$egress_config"
+systemctl restart mtproxy-egress.service
+for _ in {1..20}; do
+  ss -lnt | grep -q '127.0.0.1:1079' && break
+  sleep 1
+done
+ss -lnt | grep -q '127.0.0.1:1079' || {
+  logger -t mtproxy-failover 'shared SOCKS endpoint did not restart'
+  exit 1
+}
+printf '%s\n' "$next_route" >"$state_file"
+printf '0\n' >"$failures_file"
+logger -t mtproxy-failover "switched shared Telegram egress from $route to $next_route"
