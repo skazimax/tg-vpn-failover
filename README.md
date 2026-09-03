@@ -37,6 +37,7 @@ mtg / Telegram bot / другой сервис
 
 - `scripts/mtproxy-vless-update` — загрузка и преобразование подписки;
 - `scripts/mtproxy-failover` — health-check и зеркальное переключение;
+- `scripts/tg-vpn-failover-status` — компактное состояние для CLI или управляющего бота;
 - `systemd/` — службы и таймеры;
 - `config/mtproxy-egress.json` — начальный маршрут через AdGuard;
 - `config/egg-cam-control-proxy.conf` — пример настройки потребителя;
@@ -75,6 +76,13 @@ systemctl is-active mtproxy-failover.timer mtproxy-vless-update.timer
 sudo cat /run/mtproxy-failover/state
 sudo cat /run/mtproxy-failover/failures
 sudo journalctl -t mtproxy-failover -n 50 --no-pager
+/usr/local/sbin/tg-vpn-failover-status
+```
+
+Контролируемое ручное переключение для проверки или обслуживания:
+
+```bash
+sudo /usr/local/sbin/mtproxy-failover --force-switch
 ```
 
 ## Развёртывание

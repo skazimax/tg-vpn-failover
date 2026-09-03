@@ -27,19 +27,23 @@ else
   socks_port=1081
 fi
 
-if curl -4 -fsS --proxy "socks5h://127.0.0.1:$socks_port" \
-    --connect-timeout 7 --max-time 15 "$probe_url" | grep -q '^proxy_for '; then
-  printf '0\n' >"$failures_file"
-  printf '%s\n' "$route" >"$state_file"
-  exit 0
-fi
+if [[ ${1:-} == --force-switch ]]; then
+  logger -t mtproxy-failover "forced switch requested from $route"
+else
+  if curl -4 -fsS --proxy "socks5h://127.0.0.1:$socks_port" \
+      --connect-timeout 7 --max-time 15 "$probe_url" | grep -q '^proxy_for '; then
+    printf '0\n' >"$failures_file"
+    printf '%s\n' "$route" >"$state_file"
+    exit 0
+  fi
 
-failures=$(cat "$failures_file" 2>/dev/null || printf '0')
-[[ "$failures" =~ ^[0-9]+$ ]] || failures=0
-failures=$((failures + 1))
-printf '%s\n' "$failures" >"$failures_file"
-logger -t mtproxy-failover "Telegram probe failed on $route ($failures/$failure_threshold)"
-(( failures >= failure_threshold )) || exit 0
+  failures=$(cat "$failures_file" 2>/dev/null || printf '0')
+  [[ "$failures" =~ ^[0-9]+$ ]] || failures=0
+  failures=$((failures + 1))
+  printf '%s\n' "$failures" >"$failures_file"
+  logger -t mtproxy-failover "Telegram probe failed on $route ($failures/$failure_threshold)"
+  (( failures >= failure_threshold )) || exit 0
+fi
 
 if [[ "$route" == adguard ]]; then
   next_route=vless

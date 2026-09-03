@@ -27,6 +27,8 @@ install -o root -g root -m 0755 "$repo_dir/scripts/mtproxy-vless-update" \
   /usr/local/sbin/mtproxy-vless-update
 install -o root -g root -m 0755 "$repo_dir/scripts/mtproxy-failover" \
   /usr/local/sbin/mtproxy-failover
+install -o root -g root -m 0755 "$repo_dir/scripts/tg-vpn-failover-status" \
+  /usr/local/sbin/tg-vpn-failover-status
 install -o root -g root -m 0644 "$repo_dir/systemd/"* \
   /etc/systemd/system/
 
@@ -40,4 +42,3 @@ sing-box check -c /etc/sing-box/mtproxy-egress.json
 systemctl daemon-reload
 systemctl enable --now mtproxy-vless.service mtproxy-egress.service
 systemctl enable --now mtproxy-failover.timer mtproxy-vless-update.timer
-

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+route=$(cat /run/mtproxy-failover/state 2>/dev/null || printf 'unknown')
+failures=$(cat /run/mtproxy-failover/failures 2>/dev/null || printf '0')
+shared=$(systemctl is-active mtproxy-egress.service 2>/dev/null || true)
+adguard=$(systemctl is-active egg-cam-adguard.service 2>/dev/null || true)
+vless=$(systemctl is-active mtproxy-vless.service 2>/dev/null || true)
+timer=$(systemctl is-active mtproxy-failover.timer 2>/dev/null || true)
+
+case "$route" in
+  adguard) route_label='AdGuard' ;;
+  vless) route_label='VLESS Auto+/Auto' ;;
+  *) route_label='не определён' ;;
+esac
+
+printf 'VPN Telegram: %s\n' "$route_label"
+printf 'Общий SOCKS 127.0.0.1:1079: %s\n' "$shared"
+printf 'AdGuard: %s · VLESS: %s\n' "$adguard" "$vless"
+printf 'Failover timer: %s · ошибок подряд: %s/3\n' "$timer" "$failures"
