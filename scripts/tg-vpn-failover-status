@@ -26,3 +26,19 @@ if [[ $shared == active && $upstream == active ]]; then
 else
   printf '❌ VPN: %s\n' "$route_label"
 fi
+
+if [[ ${1:-} == --verbose ]]; then
+  mtg=$(systemctl is-active mtg.service 2>/dev/null || true)
+  failover=$(systemctl is-active mtproxy-failover.timer 2>/dev/null || true)
+  if [[ $mtg == active && $shared == active ]] && \
+      ss -lnt | grep -qE '(^|[[:space:]])[^[:space:]]*:443[[:space:]]'; then
+    printf '✅ MTProto\n'
+  else
+    printf '❌ MTProto\n'
+  fi
+  if [[ $failover == active ]]; then
+    printf '✅ Failover\n'
+  else
+    printf '❌ Failover\n'
+  fi
+fi

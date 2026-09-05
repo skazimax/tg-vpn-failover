@@ -85,6 +85,24 @@ sudo journalctl -t mtproxy-failover -n 50 --no-pager
 sudo /usr/local/sbin/mtproxy-failover --force-switch
 ```
 
+Контролируемый перезапуск AdGuard ждёт восстановления доступа к Telegram.
+Если AdGuard не восстановился и был активным маршрутом, команда сразу
+переключает общую точку на VLESS:
+
+```bash
+sudo /usr/local/sbin/mtproxy-failover --restart-adguard
+```
+
+Расширенный сетевой статус для управляющего бота:
+
+```bash
+/usr/local/sbin/tg-vpn-failover-status --verbose
+```
+
 ## Развёртывание
 
 На сервере должны быть установлены `sing-box`, `curl`, `python3` и `flock`. Файл подписок создаётся отдельно с правами `0600 root:root`, после чего выполняется `sudo ./install.sh`.
+
+Установщик также отключает оставшиеся от прежней схемы `mtproxy.service`,
+`mtproxy-update.timer`, `mtproxy-routing.service` и `redsocks.service`. В текущей схеме
+их заменяют `mtg`, `mtproxy-egress` и `mtproxy-failover`.

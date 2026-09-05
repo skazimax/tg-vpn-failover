@@ -40,5 +40,10 @@ fi
 /usr/local/sbin/mtproxy-vless-update
 sing-box check -c /etc/sing-box/mtproxy-egress.json
 systemctl daemon-reload
+# The current mtg + SOCKS egress architecture supersedes the legacy official
+# MTProxy/redsocks updater. Leaving its timer enabled performs useless writes
+# to an inactive service and makes the installed service set misleading.
+systemctl disable --now mtproxy-update.timer mtproxy.service \
+  mtproxy-routing.service redsocks.service >/dev/null 2>&1 || true
 systemctl enable --now mtproxy-vless.service mtproxy-egress.service
 systemctl enable --now mtproxy-failover.timer mtproxy-vless-update.timer

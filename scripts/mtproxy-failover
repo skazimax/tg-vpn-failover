@@ -8,6 +8,12 @@ egress_config=/etc/sing-box/mtproxy-egress.json
 probe_url=https://core.telegram.org/getProxyConfig
 failure_threshold=3
 
+probe_socks() {
+  local port="$1"
+  curl -4 -fsS --proxy "socks5h://127.0.0.1:$port" \
+    --connect-timeout 3 --max-time 5 "$probe_url" | grep -q '^proxy_for '
+}
+
 install -d -m 0755 "$runtime_dir"
 exec 9>"$runtime_dir/lock"
 flock -n 9 || exit 0
@@ -27,11 +33,35 @@ else
   socks_port=1081
 fi
 
-if [[ ${1:-} == --force-switch ]]; then
+mode=${1:-}
+[[ -z "$mode" || "$mode" == --force-switch || "$mode" == --restart-adguard ]] || {
+  echo "unsupported option: $mode" >&2
+  exit 2
+}
+
+if [[ "$mode" == --restart-adguard ]]; then
+  logger -t mtproxy-failover "controlled AdGuard restart requested (active route: $route)"
+  restarted=false
+  if systemctl restart egg-cam-adguard.service; then
+    for _ in {1..12}; do
+      if probe_socks 1080; then
+        restarted=true
+        break
+      fi
+      sleep 1
+    done
+  fi
+  if [[ "$restarted" == true ]]; then
+    [[ "$route" == adguard ]] && printf '0\n' >"$failures_file"
+    logger -t mtproxy-failover "AdGuard restart completed and Telegram probe passed"
+    exit 0
+  fi
+  logger -t mtproxy-failover "AdGuard did not recover after controlled restart"
+  [[ "$route" == adguard ]] || exit 1
+elif [[ "$mode" == --force-switch ]]; then
   logger -t mtproxy-failover "forced switch requested from $route"
 else
-  if curl -4 -fsS --proxy "socks5h://127.0.0.1:$socks_port" \
-      --connect-timeout 7 --max-time 15 "$probe_url" | grep -q '^proxy_for '; then
+  if probe_socks "$socks_port"; then
     printf '0\n' >"$failures_file"
     printf '%s\n' "$route" >"$state_file"
     exit 0
