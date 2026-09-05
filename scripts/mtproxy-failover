@@ -11,12 +11,25 @@ failure_threshold=3
 probe_socks() {
   local port="$1"
   curl -4 -fsS --proxy "socks5h://127.0.0.1:$port" \
-    --connect-timeout 3 --max-time 5 "$probe_url" | grep -q '^proxy_for '
+    --connect-timeout 3 --max-time 5 "$probe_url" 2>/dev/null | grep -q '^proxy_for '
+}
+
+mode=${1:-}
+[[ -z "$mode" || "$mode" == --force-switch || "$mode" == --restart-adguard ]] || {
+  echo "unsupported option: $mode" >&2
+  exit 2
 }
 
 install -d -m 0755 "$runtime_dir"
 exec 9>"$runtime_dir/lock"
-flock -n 9 || exit 0
+if [[ -n "$mode" ]]; then
+  flock -w 60 9 || {
+    echo "timed out waiting for the failover lock" >&2
+    exit 1
+  }
+else
+  flock -n 9 || exit 0
+fi
 
 if [[ -s "$state_file" ]]; then
   route=$(cat "$state_file")
@@ -32,12 +45,6 @@ if [[ "$route" == adguard ]]; then
 else
   socks_port=1081
 fi
-
-mode=${1:-}
-[[ -z "$mode" || "$mode" == --force-switch || "$mode" == --restart-adguard ]] || {
-  echo "unsupported option: $mode" >&2
-  exit 2
-}
 
 if [[ "$mode" == --restart-adguard ]]; then
   logger -t mtproxy-failover "controlled AdGuard restart requested (active route: $route)"
