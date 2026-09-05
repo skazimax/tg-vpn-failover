@@ -94,6 +94,19 @@ ss -lnt | grep -q "127.0.0.1:$next_port" || {
   exit 1
 }
 
+next_route_ready=false
+for _ in {1..6}; do
+  if probe_socks "$next_port"; then
+    next_route_ready=true
+    break
+  fi
+  sleep 1
+done
+[[ "$next_route_ready" == true ]] || {
+  logger -t mtproxy-failover "next route $next_route failed Telegram probe; switch cancelled"
+  exit 1
+}
+
 config_tmp=$(mktemp)
 trap 'rm -f "$config_tmp"' EXIT
 printf '%s\n' \

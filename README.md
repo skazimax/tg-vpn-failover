@@ -85,6 +85,9 @@ sudo journalctl -t mtproxy-failover -n 50 --no-pager
 sudo /usr/local/sbin/mtproxy-failover --force-switch
 ```
 
+Перед изменением общей точки контроллер проверяет доступ к Telegram через
+целевой upstream. Если резервный маршрут не работает, переключение отменяется.
+
 Контролируемый перезапуск AdGuard ждёт восстановления доступа к Telegram.
 Если AdGuard не восстановился и был активным маршрутом, команда сразу
 переключает общую точку на VLESS:
