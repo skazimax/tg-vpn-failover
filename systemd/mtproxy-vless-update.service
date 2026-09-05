@@ -6,3 +6,5 @@ After=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/mtproxy-vless-update
+TimeoutStartSec=300
+UMask=0077

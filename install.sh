@@ -23,6 +23,10 @@ id mtproxy-vless >/dev/null 2>&1 || useradd --system --gid mtproxy-vless \
   --home-dir /nonexistent --shell /usr/sbin/nologin mtproxy-vless
 
 install -d -o root -g mtproxy-vless -m 0750 /etc/sing-box
+install -d -o root -g root -m 0755 /usr/local/lib/tg-vpn-failover
+install -o root -g root -m 0644 "$repo_dir/lib/status.py" /usr/local/lib/tg-vpn-failover/status.py
+install -o root -g root -m 0644 "$repo_dir/lib/controller.py" \
+  /usr/local/lib/tg-vpn-failover/controller.py
 install -o root -g root -m 0755 "$repo_dir/scripts/mtproxy-vless-update" \
   /usr/local/sbin/mtproxy-vless-update
 install -o root -g root -m 0755 "$repo_dir/scripts/mtproxy-failover" \

@@ -6,3 +6,5 @@ After=network-online.target mtproxy-egress.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/mtproxy-failover
+TimeoutStartSec=180
+UMask=0077
