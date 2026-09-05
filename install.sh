@@ -37,9 +37,9 @@ if [[ ! -e /etc/sing-box/mtproxy-egress.json ]]; then
     "$repo_dir/config/mtproxy-egress.json" /etc/sing-box/mtproxy-egress.json
 fi
 
+systemctl daemon-reload
 /usr/local/sbin/mtproxy-vless-update
 sing-box check -c /etc/sing-box/mtproxy-egress.json
-systemctl daemon-reload
 # The current mtg + SOCKS egress architecture supersedes the legacy official
 # MTProxy/redsocks updater. Leaving its timer enabled performs useless writes
 # to an inactive service and makes the installed service set misleading.
