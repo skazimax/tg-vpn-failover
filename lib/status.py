@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import time
 
-LABELS = {'adguard': 'AdGuard', 'vless': 'SKIPP (VLESS)'}
+LABELS = {'adguard': 'AdGuard', 'vless': 'SKIPP'}
 
 
 def read_json(path):
@@ -45,16 +45,15 @@ def render(health, route, units, listening, now, verbose=False, mtproto=False):
     processes = units.get('shared') == 'active' and units.get(route) == 'active'
     label = LABELS.get(route, 'не определён')
     if not processes:
-        vpn = f'❌ VPN: {label} — процесс не работает или маршрут неизвестен'
+        vpn = f'❌ VPN: {label}'
     elif shared is None or upstream is None:
-        vpn = f'⚠️ VPN: {label} — нет актуальной проверки Telegram'
+        vpn = f'⚠️ VPN: {label}'
     elif shared and upstream:
-        vpn = f'✅ VPN: {label} — Telegram Core и Bot API доступны'
+        vpn = f'✅ VPN: {label}'
     else:
-        vpn = f'❌ VPN: {label} — проверка Telegram не пройдена'
+        vpn = f'❌ VPN: {label}'
     local_mtg = units.get('mtg') == 'active' and listening
-    mtg = ('✅ MTProto: процесс и локальный порт 443' if local_mtg
-           else '❌ MTProto: процесс или локальный порт 443 недоступен')
+    mtg = '✅ MTProto' if local_mtg else '❌ MTProto'
     if mtproto:
         return mtg
     lines = [vpn]

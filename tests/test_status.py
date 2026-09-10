@@ -19,7 +19,7 @@ class StatusTest(unittest.TestCase):
     def test_changed_route(self):
         self.health['active']='vless';self.assertTrue(self.render().startswith('⚠️ VPN'))
     def test_active_timer_no_checks(self):
-        self.health={};self.assertIn('актуальной проверки нет',self.render())
+        self.health={};self.assertTrue(self.render().startswith('⚠️ VPN'))
     def test_failed_process(self):
         self.units['shared']='failed';self.assertTrue(self.render().startswith('❌ VPN'))
     def test_timer_last_failure(self):
@@ -32,6 +32,6 @@ class StatusTest(unittest.TestCase):
     def test_config_route(self):
         self.assertEqual(status.configured_route({'outbounds':[{'tag':'active-upstream','server_port':1081}]}),'vless')
         self.assertIsNone(status.configured_route({'outbounds':[None]}))
-    def test_mtproto_explicitly_local(self):
+    def test_mtproto_is_compact(self):
         text=status.render(self.health,'adguard',self.units,True,1010,mtproto=True)
-        self.assertIn('локальный порт',text);self.assertNotIn('Telegram',text)
+        self.assertEqual(text, '✅ MTProto')
