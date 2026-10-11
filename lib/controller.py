@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Root-owned Telegram egress controller; CLI paths are intentionally fixed."""
+"""Root-owned VPN egress controller with a ru/en region switch; CLI paths are intentionally fixed."""
 from __future__ import annotations
 
 import argparse
@@ -27,6 +27,44 @@ PORTS = {"adguard": 1080, "vless": 1081, "shared": 1079}
 UNITS = {"adguard": "egg-cam-adguard.service", "vless": "mtproxy-vless.service", "shared": "mtproxy-egress.service"}
 CORE_URL = "https://core.telegram.org/getProxyConfig"
 API_URL = "https://api.telegram.org/bot0:invalid/getMe"
+SETTINGS = Path("/etc/tg-vpn-failover/config.json")
+ADGUARD_ENV = Path("/etc/tg-vpn-failover/adguard.env")
+
+
+def telegram_core(status, body):
+    return status == 200 and any(line.startswith(b"proxy_for ") for line in body.splitlines())
+
+
+def telegram_api(status, body):
+    try:
+        reply = json.loads(body)
+        return status == 401 and reply.get("ok") is False and reply.get("error_code") == 401
+    except (ValueError, AttributeError):
+        return False
+
+
+def reachable(status, body):
+    # Russian services drop foreign addresses silently; any HTTP answer proves a Russian exit.
+    return status > 0
+
+
+# Each region: health probes, VLESS groups in priority order (include all / exclude any
+# name fragments; gRPC preferred inside a group) and the AdGuard location to use.
+REGIONS = {
+    "en": {
+        "label": "EN",
+        "probes": (("core", CORE_URL, telegram_core), ("api", API_URL, telegram_api)),
+        "groups": ((("авто",), ("авто+",)), (("авто+",), ())),
+        "adguard_location": "Frankfurt",
+    },
+    "ru": {
+        "label": "RU",
+        "probes": (("mos", "https://school.mos.ru/", reachable),
+                   ("dnevnik", "https://dnevnik.mos.ru/", reachable)),
+        "groups": ((("россия",), ("белые списки",)), (("россия",), ())),
+        "adguard_location": "Moscow",
+    },
+}
 
 
 class OperationError(RuntimeError):
@@ -41,18 +79,23 @@ def encoded(value):
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
 
 
-def build_backup(raw: bytes) -> dict:
+def build_backup(raw: bytes, region="en") -> dict:
     data = b"".join(raw.split())
     if len(data) > 2 * 1024 * 1024:
         raise OperationError("subscription too large")
     decoded = base64.b64decode(data + b"=" * (-len(data) % 4), validate=True).decode()
     records = [line.strip() for line in decoded.splitlines() if line.strip().startswith("vless://")]
     name = lambda item: unquote(urlsplit(item).fragment).casefold()
-    regular = [item for item in records if "авто" in name(item) and "авто+" not in name(item)]
-    grpc = [item for item in regular if parse_qs(urlsplit(item).query).get("type") == ["grpc"]]
-    selected = grpc or regular or [item for item in records if "авто+" in name(item)]
+    selected = []
+    for include, exclude in REGIONS[region]["groups"]:
+        group = [item for item in records
+                 if all(part in name(item) for part in include) and not any(part in name(item) for part in exclude)]
+        grpc = [item for item in group if parse_qs(urlsplit(item).query).get("type") == ["grpc"]]
+        selected = grpc or group
+        if selected:
+            break
     if not selected:
-        raise OperationError("no automatic VLESS group")
+        raise OperationError("no VLESS group for region " + region)
     nodes = {}
     for record in selected:
         uri = urlsplit(record)
@@ -85,13 +128,22 @@ def build_backup(raw: bytes) -> dict:
         "log": {"level": "info", "timestamp": True},
         "inbounds": [{"type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": 1081}],
         "outbounds": [{"type": "urltest", "tag": "vless-auto", "outbounds": [n["tag"] for n in outbounds],
-                       "url": CORE_URL, "interval": "1m", "tolerance": 150, "idle_timeout": "10m",
+                       "url": REGIONS[region]["probes"][0][1], "interval": "1m", "tolerance": 150, "idle_timeout": "10m",
                        "interrupt_exist_connections": False}, *outbounds],
     }
 
 
 class Controller:
-    def __init__(self, config_dir=Path("/etc/sing-box"), runtime=Path("/run/mtproxy-failover"), gid=None):
+    def __init__(self, config_dir=Path("/etc/sing-box"), runtime=Path("/run/mtproxy-failover"), gid=None,
+                 settings=SETTINGS, adguard_env=ADGUARD_ENV):
+        self.settings = Path(settings)
+        self.adguard_env = Path(adguard_env)
+        values = self.read_json(self.settings, {})
+        values = values if isinstance(values, dict) else {}
+        self.region = values.get("region", "en")
+        if self.region not in REGIONS:
+            raise OperationError("unknown region in settings")
+        self.units = dict(UNITS, adguard=values.get("adguard_unit") or UNITS["adguard"])
         self.config_dir = Path(config_dir)
         self.runtime = Path(runtime)
         self.gid = grp.getgrnam("mtproxy-vless").gr_gid if gid is None else gid
@@ -186,15 +238,8 @@ class Controller:
             return 0, b""
 
     def probe(self, port):
-        status, body = self.http(port, CORE_URL)
-        core = status == 200 and any(line.startswith(b"proxy_for ") for line in body.splitlines())
-        status, body = self.http(port, API_URL)
-        try:
-            reply = json.loads(body)
-            api = status == 401 and reply.get("ok") is False and reply.get("error_code") == 401
-        except (ValueError, AttributeError):
-            api = False
-        return {"core": core, "api": api, "ok": core and api}
+        checks = {name: check(*self.http(port, url)) for name, url, check in REGIONS[self.region]["probes"]}
+        return {"checks": checks, "ok": all(checks.values())}
 
     def wait_healthy(self, port, attempts=2):
         for attempt in range(attempts):
@@ -217,16 +262,17 @@ class Controller:
             sample["last_ok"] = now if sample["ok"] else previous.get("paths", {}).get(name, {}).get("last_ok")
             old = previous.get("paths", {}).get(name, {}).get("ok")
             if old != sample["ok"] and (old is not None or not sample["ok"]):
-                self.log(name + (" Telegram route recovered" if sample["ok"] else " Telegram route unavailable"))
+                self.log(name + " " + self.region + (" route recovered" if sample["ok"] else " route unavailable"))
         self.atomic_write(self.runtime / "health.json", encoded({
-            "checked_at": now, "active": self.current_route(), "failures": self.failures(), "paths": samples,
+            "checked_at": now, "region": self.region, "active": self.current_route(),
+            "failures": self.failures(), "paths": samples,
         }))
 
     def active(self, route):
-        return subprocess.run(["/usr/bin/systemctl", "is-active", "--quiet", UNITS[route]], capture_output=True).returncode == 0
+        return subprocess.run(["/usr/bin/systemctl", "is-active", "--quiet", self.units[route]], capture_output=True).returncode == 0
 
     def restart(self, route):
-        self.command(["/usr/bin/systemctl", "restart", UNITS[route]], timeout=25)
+        self.command(["/usr/bin/systemctl", "restart", self.units[route]], timeout=25)
         # Type=simple becomes active before SOCKS binds. Avoid interpreting
         # that short startup window as another failure immediately after rollback.
         deadline = time.monotonic() + 3
@@ -238,7 +284,7 @@ class Controller:
                 time.sleep(0.1)
 
     def stop(self, route):
-        self.command(["/usr/bin/systemctl", "stop", UNITS[route]])
+        self.command(["/usr/bin/systemctl", "stop", self.units[route]])
 
     def ensure_upstream(self, route):
         if self.probe(PORTS[route])["ok"]:
@@ -293,7 +339,7 @@ class Controller:
             self.atomic_write(path, encoded(candidate), 0o640, self.gid)
             self.restart(kind)
             if not self.wait_healthy(PORTS[kind]):
-                raise OperationError("applied configuration failed Telegram checks")
+                raise OperationError("applied configuration failed " + self.region + " checks")
             if kind == "vless" and self.egress.exists() and self.current_route() == "vless":
                 if not self.wait_healthy(PORTS["shared"]):
                     raise OperationError("shared route failed after VLESS update")
@@ -315,7 +361,7 @@ class Controller:
         next(n for n in candidate["outbounds"] if n.get("tag") == "active-upstream")["server_port"] = PORTS[target]
         self.apply_config("shared", candidate)
         self.set_state(target)
-        self.log("switched shared Telegram egress from " + old_route + " to " + target)
+        self.log("switched shared " + self.region + " egress from " + old_route + " to " + target)
 
     def tick(self):
         self.recover_transaction()
@@ -337,7 +383,7 @@ class Controller:
         failures = self.failures() + 1
         self.set_state(route, failures)
         self.record_health(samples)
-        self.log("Telegram probe failed on " + route + " (" + str(failures) + "/3)")
+        self.log(self.region + " probe failed on " + route + " (" + str(failures) + "/3)")
         if failures >= 3:
             self.switch_to("vless" if route == "adguard" else "adguard")
             self.record_health(self.observe())
@@ -397,7 +443,7 @@ class Controller:
     def update(self):
         # Serialize downloaders; failover stays available during download/probe.
         with self.lock(wait=1, name="update.lock"):
-            candidate = build_backup(self.download())
+            candidate = build_backup(self.download(), self.region)
             with self.lock():
                 self.recover_transaction()
                 if self.read_json(self.backup) == candidate:
@@ -407,7 +453,47 @@ class Controller:
             with self.lock():
                 self.recover_transaction()
                 self.apply_config("vless", candidate)
-                self.log("VLESS subscription applied after isolated and live Telegram checks")
+                self.log("VLESS subscription applied after isolated and live " + self.region + " checks")
+
+    def write_region(self):
+        self.settings.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        values = self.read_json(self.settings, {})
+        values = values if isinstance(values, dict) else {}
+        values["region"] = self.region
+        self.atomic_write(self.settings, encoded(values), 0o644)
+        location = REGIONS[self.region]["adguard_location"]
+        self.atomic_write(self.adguard_env, ("ADGUARD_LOCATION=" + location + "\n").encode(), 0o644)
+
+    def set_region(self, region):
+        """Rebuild VLESS for the region, persist the switch, then move AdGuard and the shared route."""
+        if region not in REGIONS:
+            raise OperationError("unknown region")
+        old = self.region
+        self.region = region
+        persisted = False
+        try:
+            with self.lock(wait=1, name="update.lock"):
+                candidate = build_backup(self.download(), region)
+                self.candidate_check(candidate)
+                with self.lock(wait=30):
+                    self.recover_transaction()
+                    self.apply_config("vless", candidate)
+                    self.write_region()
+                    persisted = True
+                    self.log("region switched from " + old + " to " + region)
+                    self.restart("adguard")
+                    route = self.current_route()
+                    samples = self.observe()
+                    if not samples[route]["ok"]:
+                        other = "vless" if route == "adguard" else "adguard"
+                        if samples[other]["ok"]:
+                            self.switch_to(other)
+                    self.set_state(self.current_route())
+                    self.record_health(self.observe())
+        except BaseException:
+            if not persisted:
+                self.region = old
+            raise
 
 
 def main():
@@ -416,13 +502,16 @@ def main():
     modes.add_argument("--force-switch", action="store_true")
     modes.add_argument("--restart-adguard", action="store_true")
     modes.add_argument("--update", action="store_true")
+    modes.add_argument("--region", choices=sorted(REGIONS))
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("root is required")
     os.umask(0o077)
     controller = Controller()
     try:
-        if args.update:
+        if args.region:
+            controller.set_region(args.region)
+        elif args.update:
             controller.update()
         else:
             with controller.lock(wait=30 if args.force_switch or args.restart_adguard else 0):
@@ -435,7 +524,7 @@ def main():
                 else:
                     controller.tick()
     except Busy:
-        if not (args.force_switch or args.restart_adguard or args.update):
+        if not (args.force_switch or args.restart_adguard or args.update or args.region):
             return 0
         print("VPN controller is busy; retry later", file=sys.stderr)
         return 1

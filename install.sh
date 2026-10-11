@@ -23,6 +23,18 @@ id mtproxy-vless >/dev/null 2>&1 || useradd --system --gid mtproxy-vless \
   --home-dir /nonexistent --shell /usr/sbin/nologin mtproxy-vless
 
 install -d -o root -g mtproxy-vless -m 0750 /etc/sing-box
+install -d -o root -g root -m 0755 /etc/tg-vpn-failover
+# Region (en: Telegram, ru: Russian exit) and AdGuard unit are chosen on first install;
+# later switches go through `mtproxy-failover --region ru|en`.
+if [[ ! -e /etc/tg-vpn-failover/config.json ]]; then
+  region=${TG_VPN_REGION:-en}
+  [[ $region == en || $region == ru ]] || { echo "TG_VPN_REGION must be en or ru" >&2; exit 1; }
+  printf '{\n  "adguard_unit": "%s",\n  "region": "%s"\n}\n' \
+    "${TG_VPN_ADGUARD_UNIT:-egg-cam-adguard.service}" "$region" > /etc/tg-vpn-failover/config.json
+  location=Frankfurt; [[ $region == ru ]] && location=Moscow
+  printf 'ADGUARD_LOCATION=%s\n' "$location" > /etc/tg-vpn-failover/adguard.env
+  chmod 0644 /etc/tg-vpn-failover/config.json /etc/tg-vpn-failover/adguard.env
+fi
 install -d -o root -g root -m 0755 /usr/local/lib/tg-vpn-failover
 install -o root -g root -m 0644 "$repo_dir/lib/status.py" /usr/local/lib/tg-vpn-failover/status.py
 install -o root -g root -m 0644 "$repo_dir/lib/controller.py" \

@@ -24,6 +24,46 @@ mtg / Telegram bot / другой сервис
              fallback: Auto, затем Auto+
 ```
 
+## Регион выхода: `en` / `ru`
+
+Один переключатель задаёт, куда ведёт общий SOCKS `127.0.0.1:1079`:
+
+| | `en` (по умолчанию) | `ru` |
+|---|---|---|
+| Назначение | доступ к Telegram с сервера в РФ | российский выход с зарубежного сервера (МЭШ, сервисы в Yandex Cloud и т. п.) |
+| Проверки | `core.telegram.org/getProxyConfig` + Bot API `getMe` | любой HTTP-ответ от `school.mos.ru` и `dnevnik.mos.ru` |
+| VLESS | `Авто` (gRPC) → `Авто` → `Авто+` | `Россия` без «Белые списки» (gRPC) → «Белые списки \| Россия» |
+| AdGuard | `Frankfurt` | `Moscow` |
+| Статус | `VPN: AdGuard/SKIPP` | `VPN RU: AdGuard/SKIPP` |
+
+Настройки — `/etc/tg-vpn-failover/config.json`:
+
+```json
+{"region": "ru", "adguard_unit": "adguardvpn.service"}
+```
+
+`adguard_unit` по умолчанию `egg-cam-adguard.service` (прежняя схема). Для новой
+установки в репозитории есть `systemd/adguardvpn.service`: пользователь
+`adguardvpn`, локация берётся из `/etc/tg-vpn-failover/adguard.env`.
+
+Первичная установка в нужном регионе:
+
+```bash
+sudo env TG_VPN_REGION=ru TG_VPN_ADGUARD_UNIT=adguardvpn.service ./install.sh
+```
+
+Смена региона на работающей установке:
+
+```bash
+sudo /usr/local/sbin/mtproxy-failover --region ru   # или en
+```
+
+Команда скачивает подписку, собирает VLESS для региона и проверяет его в
+отдельном процессе, затем под общей блокировкой применяет конфигурацию,
+сохраняет регион и локацию AdGuard, перезапускает AdGuard и, если активный
+upstream не проходит проверки нового региона, сразу переводит общий маршрут на
+исправный. Пока регион не сохранён, любая ошибка оставляет прежний регион.
+
 ## Поведение
 
 - Начальный маршрут новой установки — AdGuard. Выбранный маршрут сохраняется в конфигурации общего SOCKS; исправный VLESS автоматически на AdGuard не возвращается.
@@ -43,7 +83,7 @@ mtg / Telegram bot / другой сервис
 - `scripts/mtproxy-vless-update` — точка запуска обновления подписки;
 - `scripts/mtproxy-failover` — точка запуска health-check и переключения;
 - `scripts/tg-vpn-failover-status` — одна компактная строка `VPN: AdGuard/SKIPP` для CLI или управляющего бота;
-- `systemd/` — службы и таймеры;
+- `systemd/` — службы и таймеры, включая `adguardvpn.service`;
 - `config/mtproxy-egress.json` — начальный маршрут через AdGuard;
 - `config/egg-cam-control-proxy.conf` — пример настройки потребителя;
 - `config/mtg-egress.conf` — необязательное упорядочивание запуска `mtg`.

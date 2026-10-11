@@ -1,0 +1,22 @@
+[Unit]
+Description=AdGuard VPN SOCKS upstream for tg-vpn-failover
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=adguardvpn
+Group=adguardvpn
+Environment=HOME=/var/lib/adguardvpn
+Environment=ADGUARD_LOCATION=Frankfurt
+# Written by `mtproxy-failover --region`; the location follows the selected region.
+EnvironmentFile=-/etc/tg-vpn-failover/adguard.env
+ExecStartPre=-/usr/local/bin/adguardvpn-cli disconnect
+ExecStart=/usr/local/bin/adguardvpn-cli connect --location ${ADGUARD_LOCATION} --yes --ipv4only --no-progress --no-fork --boot
+Restart=always
+RestartSec=10
+TimeoutStartSec=90
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

@@ -35,7 +35,8 @@ def egress(route="adguard"):
 class FakeController(m.Controller):
     def __init__(self, root):
         (root / "config").mkdir()
-        super().__init__(root / "config", root / "run", os.getgid())
+        super().__init__(root / "config", root / "run", os.getgid(),
+                         settings=root / "settings.json", adguard_env=root / "adguard.env")
         self.egress.write_bytes(m.encoded(egress()))
         self.backup.write_bytes(m.encoded(m.build_backup(subscription(record()))))
         self.good = {port: True for port in m.PORTS.values()}
@@ -66,7 +67,7 @@ class FakeController(m.Controller):
 
     def probe(self, port):
         ok = self.good[port]
-        return {"core": ok, "api": ok, "ok": ok}
+        return {"checks": {"core": ok, "api": ok}, "ok": ok}
 
     def wait_healthy(self, port, attempts=2):
         return self.probe(port)["ok"]
@@ -232,12 +233,62 @@ class ControllerTest(unittest.TestCase):
     def test_api_failure_marks_route_unhealthy_even_if_core_passes(self):
         with patch.object(self.c, "http", side_effect=[(200, b"proxy_for 1.1.1.1;"), (502, b"bad gateway")]):
             sample = m.Controller.probe(self.c, 1079)
-        self.assertTrue(sample["core"])
+        self.assertTrue(sample["checks"]["core"])
         self.assertFalse(sample["ok"])
 
     def test_expected_invalid_token_response_is_healthy(self):
         with patch.object(self.c, "http", side_effect=[(200, b"proxy_for 1.1.1.1;"), (401, b'{"ok":false,"error_code":401}')]):
             self.assertTrue(m.Controller.probe(self.c, 1079)["ok"])
+
+    def test_ru_probe_accepts_any_http_answer(self):
+        self.c.region = "ru"
+        with patch.object(self.c, "http", side_effect=[(403, b""), (404, b"")]):
+            self.assertTrue(m.Controller.probe(self.c, 1079)["ok"])
+        with patch.object(self.c, "http", side_effect=[(200, b""), (0, b"")]):
+            sample = m.Controller.probe(self.c, 1079)
+        self.assertEqual(sample["checks"], {"mos": True, "dnevnik": False})
+        self.assertFalse(sample["ok"])
+
+    def test_region_switch_persists_settings_and_rebuilds_vless(self):
+        self.c.raw = subscription(record("🇷🇺 Россия · 1", host="ru.example"))
+        self.c.set_region("ru")
+        self.assertEqual(self.c.region, "ru")
+        self.assertEqual(self.c.read_json(self.c.settings)["region"], "ru")
+        self.assertEqual(self.c.adguard_env.read_text(), "ADGUARD_LOCATION=Moscow\n")
+        self.assertEqual(self.c.read_json(self.c.backup)["outbounds"][1]["server"], "ru.example")
+        self.assertEqual(self.c.restarts, ["vless", "adguard"])
+        self.assertEqual(self.c.read_json(self.c.runtime / "health.json")["region"], "ru")
+
+    def test_region_switch_moves_shared_route_off_unhealthy_adguard(self):
+        self.c.raw = subscription(record("🇷🇺 Россия · 1", host="ru.example"))
+        self.c.good[1080] = False
+        self.c.set_region("ru")
+        self.assertEqual(self.c.current_route(), "vless")
+
+    def test_failed_region_candidate_keeps_previous_region(self):
+        old = self.c.backup.read_bytes()
+        self.c.raw = subscription(record("🇷🇺 Россия · 1", host="ru.example"))
+        with patch.object(self.c, "candidate_check", side_effect=m.OperationError("bad route")):
+            with self.assertRaises(m.OperationError):
+                self.c.set_region("ru")
+        self.assertEqual(self.c.region, "en")
+        self.assertFalse(self.c.settings.exists())
+        self.assertEqual(self.c.backup.read_bytes(), old)
+
+    def test_region_without_matching_nodes_is_rejected(self):
+        with self.assertRaises(m.OperationError):
+            self.c.set_region("ru")
+        self.assertEqual(self.c.region, "en")
+        with self.assertRaises(m.OperationError):
+            self.c.set_region("de")
+
+    def test_settings_select_region_and_adguard_unit(self):
+        root = Path(self.temp.name) / "second"
+        root.mkdir()
+        (root / "settings.json").write_text('{"region": "ru", "adguard_unit": "adguardvpn.service"}')
+        c = m.Controller(root / "config", root / "run", os.getgid(), settings=root / "settings.json")
+        self.assertEqual(c.region, "ru")
+        self.assertEqual(c.units["adguard"], "adguardvpn.service")
 
     def test_standby_restart_failure_is_reported(self):
         self.c.egress.write_bytes(m.encoded(egress("vless")))
@@ -260,6 +311,21 @@ class SubscriptionTest(unittest.TestCase):
     def test_order_names_and_duplicates_do_not_change_config(self):
         first, second = record(host="one.example"), record(host="two.example")
         self.assertEqual(m.build_backup(subscription(first, second)), m.build_backup(subscription(second, first, first)))
+
+    def test_ru_prefers_plain_russia_grpc(self):
+        config = m.build_backup(subscription(
+            record("🇷🇺 Россия · 1", "grpc", "ru-grpc.example"), record("🇷🇺 Россия · 2", "tcp", "ru-tcp.example"),
+            record("🌩 Белые списки | 🇷🇺 Россия · 1", "grpc", "white.example"), record()), "ru")
+        self.assertEqual([n["server"] for n in config["outbounds"][1:]], ["ru-grpc.example"])
+        self.assertEqual(config["outbounds"][0]["url"], "https://school.mos.ru/")
+
+    def test_ru_falls_back_to_whitelist_russia(self):
+        config = m.build_backup(subscription(record("🌩 Белые списки | 🇷🇺 Россия · 1", "tcp", "white.example"), record()), "ru")
+        self.assertEqual(config["outbounds"][1]["server"], "white.example")
+
+    def test_en_ignores_russia_only_subscription(self):
+        with self.assertRaises(m.OperationError):
+            m.build_backup(subscription(record("🇷🇺 Россия · 1")))
 
     def test_invalid_subscriptions_rejected(self):
         for raw in [b"bad***", subscription(record("France")), subscription(record().replace("security=reality", "security=tls")), subscription(record().replace("type=grpc", "type=ws"))]:

@@ -6,6 +6,7 @@ import subprocess
 import time
 
 LABELS = {'adguard': 'AdGuard', 'vless': 'SKIPP'}
+SETTINGS = '/etc/tg-vpn-failover/config.json'
 
 
 def read_json(path):
@@ -33,25 +34,29 @@ def path_health(health, name, now):
     sample = paths.get(name, {}) if isinstance(paths, dict) else {}
     if not isinstance(sample, dict) or not fresh(sample.get('checked_at'), now):
         return None
-    if type(sample.get('core')) is not bool or type(sample.get('api')) is not bool:
+    checks = sample.get('checks')
+    if not isinstance(checks, dict) or not checks or any(type(v) is not bool for v in checks.values()):
         return None
-    return sample['core'] and sample['api']
+    return all(checks.values())
 
 
-def render(health, route, units, listening, now, verbose=False, mtproto=False):
-    current = fresh(health.get('checked_at'), now) and health.get('active') == route and route in LABELS
+def render(health, route, units, listening, now, verbose=False, mtproto=False, region='en'):
+    current = (fresh(health.get('checked_at'), now) and health.get('active') == route and route in LABELS
+               and health.get('region', 'en') == region)
     shared = path_health(health, 'shared', now) if current else None
     upstream = path_health(health, route, now) if current else None
     processes = units.get('shared') == 'active' and units.get(route) == 'active'
     label = LABELS.get(route, 'не определён')
+    # The en (Telegram) line stays as before so existing bot screens do not change.
+    vpn_name = 'VPN' if region == 'en' else 'VPN ' + region.upper()
     if not processes:
-        vpn = f'❌ VPN: {label}'
+        vpn = f'❌ {vpn_name}: {label}'
     elif shared is None or upstream is None:
-        vpn = f'⚠️ VPN: {label}'
+        vpn = f'⚠️ {vpn_name}: {label}'
     elif shared and upstream:
-        vpn = f'✅ VPN: {label}'
+        vpn = f'✅ {vpn_name}: {label}'
     else:
-        vpn = f'❌ VPN: {label}'
+        vpn = f'❌ {vpn_name}: {label}'
     local_mtg = units.get('mtg') == 'active' and listening
     mtg = '✅ MTProto' if local_mtg else '❌ MTProto'
     if mtproto:
@@ -61,7 +66,7 @@ def render(health, route, units, listening, now, verbose=False, mtproto=False):
         for name in ('adguard', 'vless', 'shared'):
             value = path_health(health, name, now) if current else None
             icon = '⚠️' if value is None else '✅' if value else '❌'
-            detail = 'нет свежих данных' if value is None else 'Core/API доступны' if value else 'Core/API: есть ошибка'
+            detail = 'нет свежих данных' if value is None else 'проверки пройдены' if value else 'есть ошибка проверки'
             lines.append(f"{icon} {LABELS.get(name, 'Общий SOCKS')}: {detail}")
         lines.append(mtg)
         if units.get('timer') != 'active':
@@ -90,14 +95,16 @@ def main():
     args = parser.parse_args()
     health = read_json('/run/mtproxy-failover/health.json')
     route = configured_route(read_json('/etc/sing-box/mtproxy-egress.json'))
+    settings = read_json(SETTINGS)
+    region = settings.get('region', 'en')
     units = {name: command(['/usr/bin/systemctl', 'is-active', unit]) for name, unit in {
-        'shared': 'mtproxy-egress.service', 'adguard': 'egg-cam-adguard.service',
+        'shared': 'mtproxy-egress.service', 'adguard': settings.get('adguard_unit') or 'egg-cam-adguard.service',
         'vless': 'mtproxy-vless.service', 'mtg': 'mtg.service', 'timer': 'mtproxy-failover.timer',
     }.items()}
     units['result'] = command(['/usr/bin/systemctl', 'show', 'mtproxy-failover.service', '-p', 'Result', '--value'])
     ports = command(['/usr/bin/ss', '-H', '-lnt'])
     listening = any(len(row.split()) > 3 and row.split()[3].rsplit(':', 1)[-1] == '443' for row in ports.splitlines())
-    print(render(health, route, units, listening, time.time(), args.verbose, args.mtproto))
+    print(render(health, route, units, listening, time.time(), args.verbose, args.mtproto, region))
 
 
 if __name__ == '__main__':

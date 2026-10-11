@@ -1,7 +1,7 @@
 [Unit]
 Description=Stable SOCKS egress for MTProto proxy and Telegram control bot
-Wants=network-online.target egg-cam-adguard.service mtproxy-vless.service
-After=network-online.target egg-cam-adguard.service mtproxy-vless.service
+Wants=network-online.target egg-cam-adguard.service adguardvpn.service mtproxy-vless.service
+After=network-online.target egg-cam-adguard.service adguardvpn.service mtproxy-vless.service
 
 [Service]
 User=mtproxy-vless
